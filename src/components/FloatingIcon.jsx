@@ -35,6 +35,7 @@ import GrassIcon from "@mui/icons-material/Grass";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import SettingsIcon from "@mui/icons-material/Settings";
 import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 
 // Import cloud icon
 import { cloud_icon } from "../assets/pic_cloud_icon.js";
@@ -100,14 +101,24 @@ import {
   NOTE_TEXT_SIZES,
 } from "../utils/textSizeUtils";
 import { checkAcupunctureEligibility } from "../utils/acupunctureChecker";
+import {
+  handleCopyGAIFormat as copyGAIFormat,
+  handleCopyGAIWithPrompt as copyGAIWithPrompt,
+  formatDiagnosis,
+} from "../utils/gaiCopyFormatter";
+
+import { processDiagnosisData } from "../utils/diagnosisProcessor";
 
 // Import new indicators
 import StatusIndicator from "./indicators/StatusIndicator";
 import KidneyStatusIndicator from "./indicators/KidneyStatusIndicator";
 import AcupunctureIndicator from "./indicators/AcupunctureIndicator";
 
+// Import Sidebar
+import Sidebar from "./Sidebar";
+
 // Import new settings
-import { DEFAULT_SETTINGS } from "../config/defaultSettings";
+import { DEFAULT_SETTINGS, DEFAULT_GAI_PROMPT } from "../config/defaultSettings";
 import { DEFAULT_ATC5_GROUPS } from "../config/medicationGroups";
 
 // Import user info utilities
@@ -163,6 +174,38 @@ const FloatingIcon = () => {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [patientSummaryData, setPatientSummaryData] = useState([]);
+  const [enableGAICopyFormat, setEnableGAICopyFormat] = useState(false);
+  const [enableGAIPrompt, setEnableGAIPrompt] = useState(false);
+  const [enableGAISidebar, setEnableGAISidebar] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(350);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [gaiPrompt, setGaiPrompt] = useState("");
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
+  // Compute diagnosis data
+  const diagnosisData = processDiagnosisData({
+    groupedMedications,
+    groupedChineseMeds,
+    patientSummaryData,
+    trackingDays: 180
+  });
+
+  console.log('[FloatingIcon] Computed diagnosisData:', diagnosisData);
+
+  // Construct patientData object for Sidebar and GAI functions
+  const patientData = {
+    userInfo,
+    patientSummaryData,
+    allergyData,
+    surgeryData,
+    dischargeData,
+    hbcvData,
+    groupedMedications,
+    groupedLabs,
+    groupedChineseMeds,
+    imagingData,
+    diagnosisData
+  };
 
   // 新增響應式布局檢測
   const theme = useTheme();
@@ -316,6 +359,7 @@ const FloatingIcon = () => {
           );
         } else {
           // 非設置相關事件，重新處理所有數據
+          setIsDataLoaded(false);
           handleData();
         }
       }
@@ -327,6 +371,61 @@ const FloatingIcon = () => {
       removeMessageListener();
       removeDataFetchCompletionListener();
     };
+  }, []);
+
+  // Load GAI copy format setting
+  useEffect(() => {
+    chrome.storage.sync.get({
+      enableGAICopyFormat: false,
+      enableGAIPrompt: false,
+      enableGAISidebar: false,
+      gaiPrompt: DEFAULT_GAI_PROMPT
+    }, (items) => {
+      setEnableGAICopyFormat(items.enableGAICopyFormat);
+      setEnableGAIPrompt(items.enableGAIPrompt);
+      setEnableGAISidebar(items.enableGAISidebar);
+      setGaiPrompt(items.gaiPrompt || DEFAULT_GAI_PROMPT);
+      console.log('GAI Copy Format enabled:', items.enableGAICopyFormat);
+      console.log('GAI Prompt enabled:', items.enableGAIPrompt);
+      console.log('GAI Sidebar enabled:', items.enableGAISidebar);
+    });
+
+    // Listen for setting changes
+    const handleStorageChange = (changes, area) => {
+      if (area === 'sync') {
+        if (changes.enableGAICopyFormat) {
+          setEnableGAICopyFormat(changes.enableGAICopyFormat.newValue);
+          console.log('GAI Copy Format setting changed:', changes.enableGAICopyFormat.newValue);
+        }
+        if (changes.enableGAIPrompt) {
+          setEnableGAIPrompt(changes.enableGAIPrompt.newValue);
+          console.log('GAI Prompt setting changed:', changes.enableGAIPrompt.newValue);
+        }
+        if (changes.enableGAISidebar) {
+          setEnableGAISidebar(changes.enableGAISidebar.newValue);
+          console.log('GAI Sidebar setting changed:', changes.enableGAISidebar.newValue);
+        }
+        if (changes.gaiPrompt) {
+          setGaiPrompt(changes.gaiPrompt.newValue || DEFAULT_GAI_PROMPT);
+          console.log('GAI Prompt text changed');
+        }
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
+  }, []);
+
+  // Load saved sidebar width
+  useEffect(() => {
+    chrome.storage.local.get(['gaiSidebarWidth'], (result) => {
+      if (result.gaiSidebarWidth) {
+        setSidebarWidth(result.gaiSidebarWidth);
+      }
+    });
   }, []);
 
   // 在組件載入時處理資料
@@ -353,6 +452,7 @@ const FloatingIcon = () => {
 
     // 使用dataManager處理所有資料
     await handleAllData(dataSources, appSettings, setters);
+    setIsDataLoaded(true);
   };
 
   // 初始數據加載
@@ -388,10 +488,24 @@ const FloatingIcon = () => {
   // Extract user information when the dialog opens or data changes
   useEffect(() => {
     if (open) {
-      const info = extractUserInfoFromToken();
+      // First try to get from JWT token (for cloud data)
+      let info = extractUserInfoFromToken();
+
+      // If no info from token, try to get from local data
+      if (!info && window.lastInterceptedUserInfo) {
+        info = window.lastInterceptedUserInfo;
+      }
+
       setUserInfo(info);
     }
   }, [open]);
+
+  // Update user info when local data is loaded
+  useEffect(() => {
+    if (window.lastInterceptedUserInfo) {
+      setUserInfo(window.lastInterceptedUserInfo);
+    }
+  }, [groupedMedications, groupedLabs]); // Trigger when data changes
 
   const handleClick = () => {
     setOpen(true);
@@ -405,12 +519,48 @@ const FloatingIcon = () => {
     setOpen(false);
   };
 
+  const handleSidebarClose = () => {
+    setEnableGAISidebar(false);
+    chrome.storage.sync.set({ enableGAISidebar: false });
+  };
+
   const handleTabChange = (event, newValue) => {
     setTabValue(newValue);
   };
 
   const handleSnackbarClose = () => {
     setSnackbarOpen(false);
+  };
+
+  // Handle copying GAI format data
+  const handleCopyGAIFormat = () => {
+    copyGAIFormat(
+      patientData,
+      (message) => {
+        setSnackbarMessage(message);
+        setSnackbarOpen(true);
+      },
+      (message) => {
+        setSnackbarMessage(message);
+        setSnackbarOpen(true);
+      }
+    );
+  };
+
+  // Handle copying GAI format with prompt
+  const handleCopyGAIWithPrompt = () => {
+    copyGAIWithPrompt(
+      patientData,
+      gaiPrompt,
+      (message) => {
+        setSnackbarMessage(message);
+        setSnackbarOpen(true);
+      },
+      (message) => {
+        setSnackbarMessage(message);
+        setSnackbarOpen(true);
+      }
+    );
   };
 
   // Calculate CKD stage
@@ -483,13 +633,20 @@ const FloatingIcon = () => {
       justifyContent: "center",
       alignItems: "center",
       background: "transparent",
+      transition: "right 0.3s ease-in-out"
     };
+
+    // Calculate dynamic right position if sidebar is open
+    let dynamicRight = "20px";
+    if (enableGAISidebar && !isSidebarCollapsed) {
+      dynamicRight = `${20 + sidebarWidth}px`;
+    }
 
     // 使用 Map 來存儲不同位置的樣式
     const positionStyleMap = new Map([
-      ["top-right", { ...baseStyle, top: "20px" }],
-      ["middle-right", { ...baseStyle, top: "50%", transform: "translateY(-50%)" }],
-      ["bottom-right", { ...baseStyle, bottom: "20px" }]
+      ["top-right", { ...baseStyle, top: "20px", right: dynamicRight }],
+      ["middle-right", { ...baseStyle, top: "50%", transform: "translateY(-50%)", right: dynamicRight }],
+      ["bottom-right", { ...baseStyle, bottom: "20px", right: dynamicRight }]
     ]);
 
     // 返回匹配的樣式或默認值（底部右側）
@@ -511,11 +668,39 @@ const FloatingIcon = () => {
         />
       </IconButton>
 
+      <Sidebar
+        open={enableGAISidebar}
+        onClose={handleSidebarClose}
+        width={sidebarWidth}
+        setWidth={setSidebarWidth}
+        isCollapsed={isSidebarCollapsed}
+        setIsCollapsed={setIsSidebarCollapsed}
+        patientData={patientData}
+        isDataLoaded={isDataLoaded}
+      />
+
       <Dialog
         open={open}
         onClose={handleClose}
         maxWidth="xl"
         fullWidth
+        disableEnforceFocus={enableGAISidebar && !isSidebarCollapsed}
+        sx={{
+          zIndex: 1400, // Ensure it's below sidebar (sidebar is 2147483647)
+          '& .MuiDialog-container': {
+            transition: 'padding-right 0.3s ease-in-out',
+            paddingRight: (enableGAISidebar && !isSidebarCollapsed) ? `${sidebarWidth}px` : '0px'
+          }
+        }}
+        BackdropProps={{
+          sx: {
+            // 當 sidebar 開啟時，backdrop 不覆蓋 sidebar 區域，允許 sidebar 的滑鼠事件
+            right: (enableGAISidebar && !isSidebarCollapsed) ? `${sidebarWidth}px` : 0,
+            transition: 'right 0.3s ease-in-out',
+            // 確保 backdrop 不會阻擋 sidebar 的 pointer events
+            pointerEvents: (enableGAISidebar && !isSidebarCollapsed) ? 'auto' : 'auto'
+          }
+        }}
         PaperProps={{
           sx: {
             height: "90vh",
@@ -564,30 +749,6 @@ const FloatingIcon = () => {
                 alignItems: "center",
               }}
             >
-              {/* User Info Display - shown before tabs, not selectable */}
-              {userInfo && formatUserInfoDisplay(userInfo) && (
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    px: 2,
-                    py: 0.75,
-                    fontWeight: "bold",
-                    color: "#1976d2",
-                    fontSize:
-                      (generalDisplaySettings &&
-                        generalDisplaySettings.contentTextSize &&
-                        CONTENT_TEXT_SIZES[
-                        generalDisplaySettings.contentTextSize
-                        ]) ||
-                      CONTENT_TEXT_SIZES["medium"],
-                    borderRight: "1px solid #e0e0e0",
-                    flexShrink: 0,
-                  }}
-                >
-                  {formatUserInfoDisplay(userInfo)}
-                </Box>
-              )}
               <Tabs
                 value={tabValue}
                 onChange={handleTabChange}
@@ -626,7 +787,7 @@ const FloatingIcon = () => {
                 }}
               >
                 <Tab
-                  label="總覽"
+                  label={userInfo && formatUserInfoDisplay(userInfo) ? formatUserInfoDisplay(userInfo) : "總覽"}
                   icon={<HomeIcon sx={{ fontSize: "1rem" }} />}
                   iconPosition="start"
                   sx={{
@@ -768,7 +929,7 @@ const FloatingIcon = () => {
               </Tabs>
             </Paper>
 
-            {/* 狀態指示器區域 - 使用導入的指示器組件 */}
+            {/* GAI 複製按鈕與狀態指示器區域 */}
             <Box
               sx={{
                 display: "flex",
@@ -776,8 +937,68 @@ const FloatingIcon = () => {
                 ml: isNarrowScreen ? 0 : 2,
                 justifyContent: isNarrowScreen ? "flex-end" : "flex-start",
                 flexWrap: "wrap",
+                alignItems: "center",
+                gap: 0.5,
               }}
             >
+              {/* GAI 複製按鈕 */}
+              {enableGAICopyFormat && (
+                <Tooltip title="複製XML格式資料">
+                  <IconButton
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCopyGAIFormat();
+                    }}
+                    size="small"
+                    sx={{
+                      color: "primary.main",
+                      "&:hover": {
+                        backgroundColor: "primary.light",
+                        color: "primary.dark",
+                      },
+                    }}
+                  >
+                    <ContentCopyIcon sx={{ fontSize: "1.1rem" }} />
+                  </IconButton>
+                </Tooltip>
+              )}
+              {enableGAIPrompt && (
+                <Tooltip title="複製GAI提示詞+資料">
+                  <IconButton
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCopyGAIWithPrompt();
+                    }}
+                    size="small"
+                    sx={{
+                      position: "relative",
+                      color: "primary.main",
+                      "&:hover": {
+                        backgroundColor: "primary.light",
+                        color: "primary.dark",
+                      },
+                    }}
+                  >
+                    <ContentCopyIcon sx={{ fontSize: "1.1rem" }} />
+                    <Box
+                      sx={{
+                        position: "absolute",
+                        top: 2,
+                        right: 2,
+                        backgroundColor: "primary.main",
+                        color: "white",
+                        borderRadius: "4px",
+                        padding: "0px 3px",
+                        fontSize: "0.55rem",
+                        fontWeight: "bold",
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      AI
+                    </Box>
+                  </IconButton>
+                </Tooltip>
+              )}
               {ckdStage && (
                 <KidneyStatusIndicator
                   stage={ckdStage}

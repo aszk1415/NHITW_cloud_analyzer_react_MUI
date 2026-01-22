@@ -1,6 +1,6 @@
 {
   "name": "nhitw-cloud-analyzer",
-  "version": "25.1201.3",
+  "version": "26.0106.1",
   "description": "NHITW Cloud Analyzer - 更好的健保雲端 2.0",
   "license": "Apache-2.0",
   "author": "The NHITW Cloud Analyzer Project Authors",
@@ -34,6 +34,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "vite": "^6.1.0"
   },
   "devDependencies": {
